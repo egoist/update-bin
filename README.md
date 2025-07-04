@@ -1,6 +1,14 @@
-## Usage
+# update-bind
 
 Update a binary to its latest version by using the original package manager that was used to install it.
+
+## Installation
+
+```bash
+cargo install update-bin
+```
+
+## Usage
 
 ```bash
 update-bin <bin-name>
@@ -18,3 +26,7 @@ update-bin claude
 - pnpm
 - yarn
 - cargo
+
+## License
+
+MIT
