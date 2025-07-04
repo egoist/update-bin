@@ -1,4 +1,4 @@
-# update-bind
+# update-bin
 
 Update a binary to its latest version by using the original package manager that was used to install it.
 
