@@ -83,6 +83,13 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 }
 
 fn detect_package_manager(bin_name: &str) -> Result<String, String> {
+    // Check if binary is managed by mise
+    if let Ok(output) = Command::new("mise").args(&["which", bin_name]).output() {
+        if output.status.success() {
+            return Err(format!("Binary '{}' is managed by mise, skipping update", bin_name));
+        }
+    }
+
     if let Ok(output) = Command::new("which").arg(bin_name).output() {
         if !output.status.success() {
             return Err(format!("Binary '{}' not found", bin_name));
