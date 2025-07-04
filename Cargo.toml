@@ -1,7 +1,13 @@
 [package]
 name = "update-bin"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["egoist <0x142857@gmail.com>"]
+description = "Update a binary to its latest version by using the original package manager that was used to install it"
+repository = "https://github.com/egoist/update-bin"
+license = "MIT"
+keywords = ["cli", "package-manager", "update", "binary"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }

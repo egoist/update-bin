@@ -1,5 +1,6 @@
 use clap::Parser;
-use std::process::{Command, exit};
+use std::process::{Command, exit, Stdio};
+use std::io::{BufRead, BufReader};
 
 #[derive(Parser)]
 #[command(name = "update-bin")]
@@ -29,10 +30,32 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 
     let (command, args) = get_update_command(&package_manager, bin_name)?;
 
-    let status = Command::new(&command)
+    let mut child = Command::new(&command)
         .args(&args)
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to run {}: {}", command, e))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                println!("\x1b[2m---> {}\x1b[0m", line);
+            }
+        }
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("\x1b[2m---> {}\x1b[0m", line);
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Failed to wait for {}: {}", command, e))?;
 
     if !status.success() {
         return Err(format!(
@@ -43,9 +66,9 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 
     let new_version =
         get_version(bin_name, &package_manager).unwrap_or_else(|_| "unknown".to_string());
-    println!("Updated to version: {}", new_version);
 
     if old_version != new_version {
+        println!("Updated to version: {}", new_version);
         println!(
             "✅ Successfully updated {} from {} to {}",
             bin_name, old_version, new_version
@@ -72,6 +95,10 @@ fn detect_package_manager(bin_name: &str) -> Result<String, String> {
 
         if bin_path.contains("/.bun/") {
             return Ok("bun".to_string());
+        }
+
+        if bin_path.contains("/.cargo/bin/") {
+            return Ok("cargo".to_string());
         }
 
         if bin_path.contains("/.npm/") || bin_path.contains("/node_modules/.bin/") {
@@ -117,6 +144,10 @@ fn get_update_command(
             "pnpm".to_string(),
             vec!["update".to_string(), "-g".to_string(), bin_name.to_string()],
         )),
+        "cargo" => Ok((
+            "cargo".to_string(),
+            vec!["install".to_string(), bin_name.to_string()],
+        )),
         _ => Err(format!("Unsupported package manager: {}", package_manager)),
     }
 }
@@ -125,6 +156,7 @@ fn get_version(bin_name: &str, package_manager: &str) -> Result<String, String> 
     match package_manager {
         "homebrew" => get_homebrew_version(bin_name),
         "bun" | "npm" | "pnpm" => get_node_package_version(bin_name, package_manager),
+        "cargo" => get_cargo_version(bin_name),
         _ => get_binary_version(bin_name),
     }
 }
@@ -168,6 +200,33 @@ fn get_node_package_version(bin_name: &str, package_manager: &str) -> Result<Str
                 .nth(1)
                 .unwrap_or("unknown")
                 .trim()
+                .to_string();
+            return Ok(version);
+        }
+    }
+
+    get_binary_version(bin_name)
+}
+
+fn get_cargo_version(bin_name: &str) -> Result<String, String> {
+    let output = Command::new("cargo")
+        .args(&["install", "--list"])
+        .output()
+        .map_err(|e| format!("Failed to get cargo version: {}", e))?;
+
+    if !output.status.success() {
+        return get_binary_version(bin_name);
+    }
+
+    let list_output = String::from_utf8_lossy(&output.stdout);
+    for line in list_output.lines() {
+        if line.starts_with(&format!("{} ", bin_name)) {
+            let version = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|v| v.strip_prefix("v"))
+                .unwrap_or("unknown")
+                .trim_end_matches(':')
                 .to_string();
             return Ok(version);
         }
