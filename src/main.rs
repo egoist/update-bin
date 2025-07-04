@@ -30,6 +30,8 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 
     let (command, args) = get_update_command(&package_manager, bin_name)?;
 
+    println!("Updating {} with {}", bin_name, package_manager);
+
     let mut child = Command::new(&command)
         .args(&args)
         .stdout(Stdio::piped())
