@@ -16,3 +16,5 @@ update-bin claude
 - bun
 - npm
 - pnpm
+- yarn
+- cargo
