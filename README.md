@@ -8,6 +8,8 @@ Update a binary to its latest version by using the original package manager that
 cargo install update-bin
 ```
 
+Or download the binary for your platform from the [releases page](https://github.com/egoist/update-bin/releases/latest).
+
 ## Usage
 
 ```bash
