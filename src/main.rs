@@ -105,19 +105,46 @@ fn detect_package_manager(bin_name: &str) -> Result<String, String> {
             return Ok("cargo".to_string());
         }
 
-        if bin_path.contains("/.npm/") || bin_path.contains("/node_modules/.bin/") {
-            if Command::new("pnpm").arg("--version").output().is_ok() {
-                if let Ok(pnpm_output) = Command::new("pnpm")
-                    .args(&["list", "-g", "--depth=0"])
-                    .output()
-                {
-                    let pnpm_list = String::from_utf8_lossy(&pnpm_output.stdout);
-                    if pnpm_list.contains(bin_name) {
-                        return Ok("pnpm".to_string());
-                    }
-                }
+        // check if installed by pnpm
+        let global_bin_dir = Command::new("pnpm")
+            .args(&["bin", "-g"])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        if let Some(dir) = global_bin_dir {
+            if bin_path.contains(&dir) {
+                return Ok("pnpm".to_string());
             }
-            return Ok("npm".to_string());
+        }
+
+        // get npm binary path by running `which npm` and get its directory
+        let npm_bin_path = Command::new("which")
+            .arg("npm")
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        let npm_bin_dir = npm_bin_path.as_ref().map(|path| {
+            let mut parts: Vec<&str> = path.split('/').collect();
+            parts.pop();
+            parts.join("/")
+        });
+
+        if let Some(dir) = npm_bin_dir {
+            if bin_path.contains(&dir) {
+                return Ok("npm".to_string());
+            }
+        }
+
+        // check if installed by yarn
+        let yarn_bin_dir = Command::new("yarn")
+            .args(&["global", "bin"])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        if let Some(dir) = yarn_bin_dir {
+            if bin_path.contains(&dir) {
+                return Ok("yarn".to_string());
+            }
         }
     }
 
