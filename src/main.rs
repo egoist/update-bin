@@ -128,7 +128,7 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
         if bin_path.contains("/opt/homebrew/") || bin_path.contains("/usr/local/") {
             return Ok(PackageManager {
                 name: "homebrew".to_string(),
-                package_name: bin_name.to_string(),
+                package_name: map_bin_name_to_homebrew_package_name(bin_name),
             });
         }
 
@@ -534,5 +534,49 @@ fn map_bin_name_to_bun_package_name(bin_name: &str) -> String {
         }
     }
 
+    bin_name.to_string()
+}
+
+// Similar to map_bin_name_to_npm_package_name but for homebrew
+fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
+    // Get all installed packages in one call
+    let installed_packages = Command::new("brew")
+        .args(&["list", "--formula"])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    
+    if let Some(installed_list) = installed_packages {
+        // Convert to a set for O(1) lookup
+        let installed_set: std::collections::HashSet<&str> = installed_list.lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect();
+        
+        // Use `brew which-formula` to find which packages provide the binary
+        let candidates = Command::new("brew")
+            .args(&["which-formula", bin_name])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        
+        if let Some(candidates) = candidates {
+            if !candidates.is_empty() && !candidates.contains("Error") {
+                // Find the first candidate that is installed
+                for candidate in candidates.lines() {
+                    let candidate = candidate.trim();
+                    if candidate.is_empty() {
+                        continue;
+                    }
+                    
+                    if installed_set.contains(candidate) {
+                        return candidate.to_string();
+                    }
+                }
+            }
+        }
+    }
+    
+    // If we can't find the package that provides the binary, fall back to the bin name
     bin_name.to_string()
 }
