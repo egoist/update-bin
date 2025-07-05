@@ -9,18 +9,37 @@ use std::process::{exit, Command, Stdio};
 #[command(about = "Update a binary to its latest version by using the original package manager")]
 struct Args {
     bin_name: String,
+    #[arg(long, help = "Display package name and package manager instead of updating")]
+    info: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    match update_binary(&args.bin_name) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            exit(1);
+    if args.info {
+        match display_info(&args.bin_name) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                exit(1);
+            }
+        }
+    } else {
+        match update_binary(&args.bin_name) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                exit(1);
+            }
         }
     }
+}
+
+fn display_info(bin_name: &str) -> Result<(), String> {
+    let package_manager = detect_package_manager(bin_name)?;
+    println!("Package name: {}", package_manager.package_name);
+    println!("Package manager: {}", package_manager.name);
+    Ok(())
 }
 
 fn update_binary(bin_name: &str) -> Result<(), String> {
@@ -116,7 +135,7 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
         if bin_path.contains("/.bun/") {
             return Ok(PackageManager {
                 name: "bun".to_string(),
-                package_name: bin_name.to_string(),
+                package_name: map_bin_name_to_bun_package_name(bin_name),
             });
         }
 
@@ -470,6 +489,45 @@ fn map_bin_name_to_yarn_package_name(bin_name: &str) -> String {
                         if bin_name_in_json == bin_name {
                             return package_name.to_string();
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    bin_name.to_string()
+}
+
+// Similar to map_bin_name_to_npm_package_name but for bun
+fn map_bin_name_to_bun_package_name(bin_name: &str) -> String {
+    // Bun's global directory is typically ~/.bun/install/global
+    let bun_global_dir = std::env::var("HOME")
+        .map(|home| format!("{}/.bun/install/global", home))
+        .unwrap_or_else(|_| "~/.bun/install/global".to_string());
+    
+    let package_json_path = format!("{}/package.json", bun_global_dir);
+    let package_json_content = std::fs::read_to_string(package_json_path).unwrap_or_default();
+    let package_json: serde_json::Value =
+        serde_json::from_str(&package_json_content).unwrap_or_default();
+
+    let empty_map = serde_json::Map::new();
+    let packages = package_json["dependencies"]
+        .as_object()
+        .unwrap_or(&empty_map);
+    for (package_name, _) in packages {
+        let node_modules_dir = format!("{}/node_modules", bun_global_dir);
+        let package_json_path = format!("{}/{}/package.json", node_modules_dir, package_name);
+        let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
+        let package_json: serde_json::Value =
+            serde_json::from_str(&package_json).unwrap_or_default();
+        if let Some(bin) = package_json.get("bin") {
+            if bin.is_string() && bin.as_str() == Some(bin_name) {
+                return package_name.to_string();
+            }
+            if bin.is_object() {
+                for (bin_name_in_json, _) in bin.as_object().unwrap() {
+                    if bin_name_in_json == bin_name {
+                        return package_name.to_string();
                     }
                 }
             }
