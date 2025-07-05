@@ -69,7 +69,7 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
     if !status.success() {
         return Err(format!(
             "Failed to update {} with {}",
-            bin_name, package_manager.name
+            package_manager.package_name, package_manager.name
         ));
     }
 
@@ -80,10 +80,13 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
         println!("Updated to version: {}", new_version);
         println!(
             "✅ Successfully updated {} from {} to {}",
-            bin_name, old_version, new_version
+            package_manager.package_name, old_version, new_version
         );
     } else {
-        println!("ℹ️  {} is already up to date ({})", bin_name, old_version);
+        println!(
+            "ℹ️  {} is already up to date ({})",
+            package_manager.package_name, old_version
+        );
     }
 
     Ok(())
@@ -134,7 +137,7 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
             if bin_path.contains(&dir) {
                 return Ok(PackageManager {
                     name: "pnpm".to_string(),
-                    package_name: bin_name.to_string(),
+                    package_name: map_bin_name_to_pnpm_package_name(bin_name),
                 });
             }
         }
@@ -181,7 +184,7 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
             if bin_path.contains(&dir) {
                 return Ok(PackageManager {
                     name: "yarn".to_string(),
-                    package_name: bin_name.to_string(),
+                    package_name: map_bin_name_to_yarn_package_name(bin_name),
                 });
             }
         }
@@ -229,6 +232,14 @@ fn get_update_command(
         "cargo" => Ok((
             "cargo".to_string(),
             vec!["install".to_string(), package_name.to_string()],
+        )),
+        "yarn" => Ok((
+            "yarn".to_string(),
+            vec![
+                "global".to_string(),
+                "upgrade".to_string(),
+                package_name.to_string(),
+            ],
         )),
         _ => Err(format!("Unsupported package manager: {}", package_manager)),
     }
@@ -360,6 +371,93 @@ fn map_bin_name_to_npm_package_name(bin_name: &str, global_node_modules_dir: &st
         for (package_name, _) in packages {
             let package_json_path =
                 format!("{}/{}/package.json", global_node_modules_dir, package_name);
+            let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
+            let package_json: serde_json::Value =
+                serde_json::from_str(&package_json).unwrap_or_default();
+            if let Some(bin) = package_json.get("bin") {
+                if bin.is_string() && bin.as_str() == Some(bin_name) {
+                    return package_name.to_string();
+                }
+                if bin.is_object() {
+                    for (bin_name_in_json, _) in bin.as_object().unwrap() {
+                        if bin_name_in_json == bin_name {
+                            return package_name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bin_name.to_string()
+}
+
+// Similar to map_bin_name_to_npm_package_name but for pnpm
+fn map_bin_name_to_pnpm_package_name(bin_name: &str) -> String {
+    let global_json_content = Command::new("pnpm")
+        .args(&["list", "-g", "--json"])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if let Some(global_json_content) = global_json_content {
+        let global_json: serde_json::Value =
+            serde_json::from_str(&global_json_content).unwrap_or_default();
+
+        if let Some(global_array) = global_json.as_array() {
+            for global_object in global_array {
+                let empty_map = serde_json::Map::new();
+                let packages = global_object["dependencies"]
+                    .as_object()
+                    .unwrap_or(&empty_map);
+                for (package_name, package_info) in packages {
+                    // Use the path from the package info to find package.json
+                    if let Some(package_path) = package_info["path"].as_str() {
+                        let package_json_path = format!("{}/package.json", package_path);
+                        let package_json =
+                            std::fs::read_to_string(package_json_path).unwrap_or_default();
+                        let package_json: serde_json::Value =
+                            serde_json::from_str(&package_json).unwrap_or_default();
+                        if let Some(bin) = package_json.get("bin") {
+                            if bin.is_string() && bin.as_str() == Some(bin_name) {
+                                return package_name.to_string();
+                            }
+                            if bin.is_object() {
+                                for (bin_name_in_json, _) in bin.as_object().unwrap() {
+                                    if bin_name_in_json == bin_name {
+                                        return package_name.to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bin_name.to_string()
+}
+
+// Similar to map_bin_name_to_npm_package_name but for yarn
+fn map_bin_name_to_yarn_package_name(bin_name: &str) -> String {
+    let yarn_global_dir = Command::new("yarn")
+        .args(&["global", "dir"])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if let Some(global_dir) = yarn_global_dir {
+        let package_json_path = format!("{}/package.json", global_dir);
+        let package_json_content = std::fs::read_to_string(package_json_path).unwrap_or_default();
+        let package_json: serde_json::Value =
+            serde_json::from_str(&package_json_content).unwrap_or_default();
+
+        let empty_map = serde_json::Map::new();
+        let packages = package_json["dependencies"]
+            .as_object()
+            .unwrap_or(&empty_map);
+        for (package_name, _) in packages {
+            let node_modules_dir = format!("{}/node_modules", global_dir);
+            let package_json_path = format!("{}/{}/package.json", node_modules_dir, package_name);
             let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
             let package_json: serde_json::Value =
                 serde_json::from_str(&package_json).unwrap_or_default();
