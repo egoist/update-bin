@@ -1,6 +1,6 @@
 use clap::Parser;
-use std::process::{Command, exit, Stdio};
 use std::io::{BufRead, BufReader};
+use std::process::{exit, Command, Stdio};
 
 #[derive(Parser)]
 #[command(name = "update-bin")]
@@ -57,7 +57,9 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
         }
     }
 
-    let status = child.wait().map_err(|e| format!("Failed to wait for {}: {}", command, e))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for {}: {}", command, e))?;
 
     if !status.success() {
         return Err(format!(
@@ -83,13 +85,6 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 }
 
 fn detect_package_manager(bin_name: &str) -> Result<String, String> {
-    // Check if binary is managed by mise
-    if let Ok(output) = Command::new("mise").args(&["which", bin_name]).output() {
-        if output.status.success() {
-            return Err(format!("Binary '{}' is managed by mise, skipping update", bin_name));
-        }
-    }
-
     if let Ok(output) = Command::new("which").arg(bin_name).output() {
         if !output.status.success() {
             return Err(format!("Binary '{}' not found", bin_name));
