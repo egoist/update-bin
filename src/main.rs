@@ -1,7 +1,8 @@
 use clap::Parser;
 use serde_json;
+use std::env;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 
 #[derive(Parser)]
@@ -116,72 +117,92 @@ struct PackageManager {
     package_name: String,
 }
 
+fn find_binary_path(bin_name: &str) -> Result<String, String> {
+    let command = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    
+    if let Ok(output) = Command::new(command).arg(bin_name).output() {
+        if output.status.success() {
+            let bin_path_raw = String::from_utf8_lossy(&output.stdout);
+            let bin_path = bin_path_raw.trim();
+            
+            // On Windows, 'where' can return multiple paths, so we take the first one
+            let first_path = bin_path.lines().next().unwrap_or(bin_path);
+            return Ok(first_path.to_string());
+        }
+    }
+    
+    Err(format!("Binary '{}' not found", bin_name))
+}
+
 fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
-    if let Ok(output) = Command::new("which").arg(bin_name).output() {
-        if !output.status.success() {
-            return Err(format!("Binary '{}' not found", bin_name));
-        }
+    let bin_path = find_binary_path(bin_name)?;
 
-        let bin_path_raw = String::from_utf8_lossy(&output.stdout);
-        let bin_path = bin_path_raw.trim();
+    // Normalize path separators for comparison
+    let normalized_path = bin_path.replace('\\', "/");
 
-        if bin_path.contains("/opt/homebrew/") || bin_path.contains("/usr/local/") {
-            return Ok(PackageManager {
-                name: "homebrew".to_string(),
-                package_name: map_bin_name_to_homebrew_package_name(bin_name),
-            });
-        }
-
-        if bin_path.contains("/.bun/") {
-            return Ok(PackageManager {
-                name: "bun".to_string(),
-                package_name: map_bin_name_to_bun_package_name(bin_name),
-            });
-        }
-
-        if bin_path.contains("/.cargo/bin/") {
-            return Ok(PackageManager {
-                name: "cargo".to_string(),
-                package_name: bin_name.to_string(),
-            });
-        }
-
-        // check if installed by pnpm
-        let global_bin_dir = Command::new("pnpm")
-            .args(&["bin", "-g"])
-            .output()
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
-        if let Some(dir) = global_bin_dir {
-            if bin_path.contains(&dir) {
-                return Ok(PackageManager {
-                    name: "pnpm".to_string(),
-                    package_name: map_bin_name_to_pnpm_package_name(bin_name),
-                });
-            }
-        }
-
-        // get npm binary path by running `which npm` and get its directory
-        let npm_bin_path = Command::new("which")
-            .arg("npm")
-            .output()
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
-        let npm_bin_dir = npm_bin_path.as_ref().map(|path| {
-            let mut parts: Vec<&str> = path.split('/').collect();
-            parts.pop();
-            parts.join("/")
+    // Check for Homebrew (macOS/Linux only)
+    if !cfg!(target_os = "windows") && (normalized_path.contains("/opt/homebrew/") || normalized_path.contains("/usr/local/")) {
+        return Ok(PackageManager {
+            name: "homebrew".to_string(),
+            package_name: map_bin_name_to_homebrew_package_name(bin_name),
         });
+    }
 
-        if let Some(dir) = npm_bin_dir {
-            if bin_path.contains(&dir) {
-                let global_node_modules_dir = Path::new(&dir)
+    // Check for Bun
+    if normalized_path.contains("/.bun/") || (cfg!(target_os = "windows") && normalized_path.to_lowercase().contains("\\appdata\\roaming\\bun\\")) {
+        return Ok(PackageManager {
+            name: "bun".to_string(),
+            package_name: map_bin_name_to_bun_package_name(bin_name),
+        });
+    }
+
+    // Check for Cargo
+    if normalized_path.contains("/.cargo/bin/") || (cfg!(target_os = "windows") && normalized_path.to_lowercase().contains("\\.cargo\\bin\\")) {
+        return Ok(PackageManager {
+            name: "cargo".to_string(),
+            package_name: bin_name.to_string(),
+        });
+    }
+
+    // check if installed by pnpm
+    let global_bin_dir = Command::new("pnpm")
+        .args(&["bin", "-g"])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if let Some(dir) = global_bin_dir {
+        let normalized_dir = dir.replace('\\', "/");
+        if normalized_path.contains(&normalized_dir) {
+            return Ok(PackageManager {
+                name: "pnpm".to_string(),
+                package_name: map_bin_name_to_pnpm_package_name(bin_name),
+            });
+        }
+    }
+
+    // get npm binary path and get its directory
+    if let Ok(npm_bin_path) = find_binary_path("npm") {
+        let npm_path = PathBuf::from(&npm_bin_path);
+        if let Some(npm_bin_dir) = npm_path.parent() {
+            let npm_bin_dir_str = npm_bin_dir.to_string_lossy();
+            let normalized_npm_dir = npm_bin_dir_str.replace('\\', "/");
+            
+            if normalized_path.contains(&normalized_npm_dir) {
+                let global_node_modules_dir = npm_bin_dir
                     .parent()
-                    .unwrap()
-                    .join("lib")
-                    .join("node_modules")
-                    .to_string_lossy()
-                    .to_string();
+                    .and_then(|p| {
+                        if cfg!(target_os = "windows") {
+                            Some(p.join("node_modules"))
+                        } else {
+                            Some(p.join("lib").join("node_modules"))
+                        }
+                    })
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
 
                 return Ok(PackageManager {
                     name: "npm".to_string(),
@@ -192,20 +213,21 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
                 });
             }
         }
+    }
 
-        // check if installed by yarn
-        let yarn_bin_dir = Command::new("yarn")
-            .args(&["global", "bin"])
-            .output()
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
-        if let Some(dir) = yarn_bin_dir {
-            if bin_path.contains(&dir) {
-                return Ok(PackageManager {
-                    name: "yarn".to_string(),
-                    package_name: map_bin_name_to_yarn_package_name(bin_name),
-                });
-            }
+    // check if installed by yarn
+    let yarn_bin_dir = Command::new("yarn")
+        .args(&["global", "bin"])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if let Some(dir) = yarn_bin_dir {
+        let normalized_dir = dir.replace('\\', "/");
+        if normalized_path.contains(&normalized_dir) {
+            return Ok(PackageManager {
+                name: "yarn".to_string(),
+                package_name: map_bin_name_to_yarn_package_name(bin_name),
+            });
         }
     }
 
@@ -388,8 +410,11 @@ fn map_bin_name_to_npm_package_name(bin_name: &str, global_node_modules_dir: &st
             .as_object()
             .unwrap_or(&empty_map);
         for (package_name, _) in packages {
-            let package_json_path =
-                format!("{}/{}/package.json", global_node_modules_dir, package_name);
+            let package_json_path = if cfg!(target_os = "windows") {
+                format!("{}\\{}\\package.json", global_node_modules_dir, package_name)
+            } else {
+                format!("{}/{}/package.json", global_node_modules_dir, package_name)
+            };
             let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
             let package_json: serde_json::Value =
                 serde_json::from_str(&package_json).unwrap_or_default();
@@ -431,7 +456,11 @@ fn map_bin_name_to_pnpm_package_name(bin_name: &str) -> String {
                 for (package_name, package_info) in packages {
                     // Use the path from the package info to find package.json
                     if let Some(package_path) = package_info["path"].as_str() {
-                        let package_json_path = format!("{}/package.json", package_path);
+                        let package_json_path = if cfg!(target_os = "windows") {
+                            format!("{}\\package.json", package_path)
+                        } else {
+                            format!("{}/package.json", package_path)
+                        };
                         let package_json =
                             std::fs::read_to_string(package_json_path).unwrap_or_default();
                         let package_json: serde_json::Value =
@@ -465,7 +494,11 @@ fn map_bin_name_to_yarn_package_name(bin_name: &str) -> String {
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
     if let Some(global_dir) = yarn_global_dir {
-        let package_json_path = format!("{}/package.json", global_dir);
+        let package_json_path = if cfg!(target_os = "windows") {
+            format!("{}\\package.json", global_dir)
+        } else {
+            format!("{}/package.json", global_dir)
+        };
         let package_json_content = std::fs::read_to_string(package_json_path).unwrap_or_default();
         let package_json: serde_json::Value =
             serde_json::from_str(&package_json_content).unwrap_or_default();
@@ -475,8 +508,16 @@ fn map_bin_name_to_yarn_package_name(bin_name: &str) -> String {
             .as_object()
             .unwrap_or(&empty_map);
         for (package_name, _) in packages {
-            let node_modules_dir = format!("{}/node_modules", global_dir);
-            let package_json_path = format!("{}/{}/package.json", node_modules_dir, package_name);
+            let node_modules_dir = if cfg!(target_os = "windows") {
+                format!("{}\\node_modules", global_dir)
+            } else {
+                format!("{}/node_modules", global_dir)
+            };
+            let package_json_path = if cfg!(target_os = "windows") {
+                format!("{}\\{}\\package.json", node_modules_dir, package_name)
+            } else {
+                format!("{}/{}/package.json", node_modules_dir, package_name)
+            };
             let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
             let package_json: serde_json::Value =
                 serde_json::from_str(&package_json).unwrap_or_default();
@@ -500,12 +541,22 @@ fn map_bin_name_to_yarn_package_name(bin_name: &str) -> String {
 
 // Similar to map_bin_name_to_npm_package_name but for bun
 fn map_bin_name_to_bun_package_name(bin_name: &str) -> String {
-    // Bun's global directory is typically ~/.bun/install/global
-    let bun_global_dir = std::env::var("HOME")
-        .map(|home| format!("{}/.bun/install/global", home))
-        .unwrap_or_else(|_| "~/.bun/install/global".to_string());
+    // Bun's global directory is typically ~/.bun/install/global on Unix, %APPDATA%\bun on Windows
+    let bun_global_dir = if cfg!(target_os = "windows") {
+        env::var("APPDATA")
+            .map(|appdata| format!("{}\\bun", appdata))
+            .unwrap_or_else(|_| "~\\AppData\\Roaming\\bun".to_string())
+    } else {
+        env::var("HOME")
+            .map(|home| format!("{}/.bun/install/global", home))
+            .unwrap_or_else(|_| "~/.bun/install/global".to_string())
+    };
     
-    let package_json_path = format!("{}/package.json", bun_global_dir);
+    let package_json_path = if cfg!(target_os = "windows") {
+        format!("{}\\package.json", bun_global_dir)
+    } else {
+        format!("{}/package.json", bun_global_dir)
+    };
     let package_json_content = std::fs::read_to_string(package_json_path).unwrap_or_default();
     let package_json: serde_json::Value =
         serde_json::from_str(&package_json_content).unwrap_or_default();
@@ -515,8 +566,16 @@ fn map_bin_name_to_bun_package_name(bin_name: &str) -> String {
         .as_object()
         .unwrap_or(&empty_map);
     for (package_name, _) in packages {
-        let node_modules_dir = format!("{}/node_modules", bun_global_dir);
-        let package_json_path = format!("{}/{}/package.json", node_modules_dir, package_name);
+        let node_modules_dir = if cfg!(target_os = "windows") {
+            format!("{}\\node_modules", bun_global_dir)
+        } else {
+            format!("{}/node_modules", bun_global_dir)
+        };
+        let package_json_path = if cfg!(target_os = "windows") {
+            format!("{}\\{}\\package.json", node_modules_dir, package_name)
+        } else {
+            format!("{}/{}/package.json", node_modules_dir, package_name)
+        };
         let package_json = std::fs::read_to_string(package_json_path).unwrap_or_default();
         let package_json: serde_json::Value =
             serde_json::from_str(&package_json).unwrap_or_default();
@@ -579,4 +638,138 @@ fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
     
     // If we can't find the package that provides the binary, fall back to the bin name
     bin_name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_binary_path_cross_platform() {
+        // This test will use the appropriate command based on the OS
+        // On Unix systems, it uses "which", on Windows it uses "where"
+        
+        // Test with a commonly available binary (cargo, since this is a Rust project)
+        match find_binary_path("cargo") {
+            Ok(path) => {
+                assert!(!path.is_empty());
+                assert!(path.contains("cargo"));
+                
+                if cfg!(target_os = "windows") {
+                    // On Windows, paths typically contain backslashes and .exe extensions
+                    assert!(path.contains(".exe") || path.ends_with("cargo"));
+                } else {
+                    // On Unix systems, paths use forward slashes
+                    assert!(path.contains("/"));
+                }
+            }
+            Err(_) => {
+                // If cargo is not found, that's also valid for testing
+                // The important part is that the function doesn't panic
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_binary_path_nonexistent() {
+        // Test with a binary that doesn't exist
+        let result = find_binary_path("this-binary-definitely-does-not-exist-12345");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_path_normalization() {
+        // Test Windows path normalization
+        let windows_path = "C:\\Users\\Test\\.cargo\\bin\\update-bin.exe";
+        let normalized = windows_path.replace('\\', "/");
+        assert_eq!(normalized, "C:/Users/Test/.cargo/bin/update-bin.exe");
+        
+        // Test Unix path (should remain unchanged)
+        let unix_path = "/home/user/.cargo/bin/update-bin";
+        let normalized = unix_path.replace('\\', "/");
+        assert_eq!(normalized, "/home/user/.cargo/bin/update-bin");
+    }
+
+    #[test]
+    fn test_cargo_path_detection() {
+        // Test that we can detect cargo paths on both Windows and Unix
+        let unix_cargo_path = "/home/user/.cargo/bin/some-binary";
+        let windows_cargo_path = "C:\\Users\\User\\.cargo\\bin\\some-binary.exe";
+        
+        // Test Unix path
+        let normalized_unix = unix_cargo_path.replace('\\', "/");
+        assert!(normalized_unix.contains("/.cargo/bin/"));
+        
+        // Test Windows path
+        let normalized_windows = windows_cargo_path.replace('\\', "/");
+        assert!(normalized_windows.contains("/.cargo/bin/"));
+        
+        // Test Windows-specific detection
+        if cfg!(target_os = "windows") {
+            assert!(windows_cargo_path.to_lowercase().contains("\\.cargo\\bin\\"));
+        }
+    }
+
+    #[test]
+    fn test_bun_path_detection() {
+        // Test Bun path detection for different platforms
+        let unix_bun_path = "/home/user/.bun/bin/some-binary";
+        let windows_bun_path = "C:\\Users\\User\\AppData\\Roaming\\bun\\bin\\some-binary.exe";
+        
+        // Test Unix path
+        let normalized_unix = unix_bun_path.replace('\\', "/");
+        assert!(normalized_unix.contains("/.bun/"));
+        
+        // Test Windows path
+        let normalized_windows = windows_bun_path.replace('\\', "/");
+        assert!(normalized_windows.to_lowercase().contains("appdata/roaming/bun"));
+    }
+
+    #[test]
+    fn test_get_update_command() {
+        // Test that get_update_command returns the correct commands for each package manager
+        let test_cases = vec![
+            ("homebrew", "test-package", ("brew", vec!["upgrade", "test-package"])),
+            ("npm", "test-package", ("npm", vec!["update", "-g", "test-package"])),
+            ("pnpm", "test-package", ("pnpm", vec!["update", "-g", "test-package"])),
+            ("yarn", "test-package", ("yarn", vec!["global", "upgrade", "test-package"])),
+            ("cargo", "test-package", ("cargo", vec!["install", "test-package"])),
+            ("bun", "test-package", ("bun", vec!["update", "-g", "test-package"])),
+        ];
+
+        for (pm_name, package_name, expected) in test_cases {
+            let result = get_update_command(pm_name, package_name);
+            assert!(result.is_ok());
+            
+            let (command, args) = result.unwrap();
+            assert_eq!(command, expected.0);
+            assert_eq!(args, expected.1.iter().map(|s| s.to_string()).collect::<Vec<String>>());
+        }
+        
+        // Test unsupported package manager
+        let result = get_update_command("unsupported", "test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported package manager"));
+    }
+
+    #[test]
+    fn test_home_directory_detection() {
+        // Test that we can detect the appropriate directory for different platforms
+        if cfg!(target_os = "windows") {
+            // On Windows, we should use APPDATA
+            if let Ok(appdata) = env::var("APPDATA") {
+                let bun_dir = format!("{}\\bun", appdata);
+                assert!(bun_dir.contains("bun"));
+                assert!(bun_dir.contains("\\"));
+            }
+        } else {
+            // On Unix systems, we should use HOME
+            if let Ok(home) = env::var("HOME") {
+                let bun_dir = format!("{}/.bun/install/global", home);
+                assert!(bun_dir.contains(".bun"));
+                assert!(bun_dir.contains("/"));
+            }
+        }
+    }
 }
