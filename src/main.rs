@@ -45,6 +45,18 @@ fn display_info(bin_name: &str) -> Result<(), String> {
 fn update_binary(bin_name: &str) -> Result<(), String> {
     let package_manager = detect_package_manager(bin_name)?;
 
+    // Check for special cases where a package manager tries to update itself
+    if is_self_update_attempt(&package_manager.name, bin_name) {
+        return Err(format!(
+            "Cannot update '{}' using {} because it is the package manager itself.\n\
+            Suggestions:\n\
+            - For cargo: Use 'rustup update' to update the Rust toolchain\n\
+            - For npm/pnpm/yarn/bun: Update Node.js or use their self-update commands\n\
+            - For brew: Use 'brew update && brew upgrade'",
+            bin_name, package_manager.name
+        ));
+    }
+
     let old_version =
         get_version(bin_name, &package_manager).unwrap_or_else(|_| "unknown".to_string());
     println!("Current version: {}", old_version);
@@ -114,6 +126,18 @@ fn update_binary(bin_name: &str) -> Result<(), String> {
 struct PackageManager {
     name: String,
     package_name: String,
+}
+
+fn is_self_update_attempt(package_manager_name: &str, bin_name: &str) -> bool {
+    match package_manager_name {
+        "cargo" => bin_name == "cargo",
+        "npm" => bin_name == "npm",
+        "pnpm" => bin_name == "pnpm", 
+        "yarn" => bin_name == "yarn",
+        "bun" => bin_name == "bun",
+        "homebrew" => bin_name == "brew",
+        _ => false,
+    }
 }
 
 fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
