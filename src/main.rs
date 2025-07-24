@@ -142,7 +142,7 @@ fn detect_package_manager(bin_name: &str) -> Result<PackageManager, String> {
         if bin_path.contains("/.cargo/bin/") {
             return Ok(PackageManager {
                 name: "cargo".to_string(),
-                package_name: bin_name.to_string(),
+                package_name: map_bin_name_to_cargo_package_name(bin_name),
             });
         }
 
@@ -248,10 +248,16 @@ fn get_update_command(
                 package_name.to_string(),
             ],
         )),
-        "cargo" => Ok((
-            "cargo".to_string(),
-            vec!["install".to_string(), package_name.to_string()],
-        )),
+        "cargo" => {
+            if package_name == "cargo-toolchain" {
+                Err("Cannot update cargo itself via cargo install. Use 'rustup update' to update the Rust toolchain including cargo.".to_string())
+            } else {
+                Ok((
+                    "cargo".to_string(),
+                    vec!["install".to_string(), package_name.to_string()],
+                ))
+            }
+        },
         "yarn" => Ok((
             "yarn".to_string(),
             vec![
@@ -578,5 +584,47 @@ fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
     }
     
     // If we can't find the package that provides the binary, fall back to the bin name
+    bin_name.to_string()
+}
+
+// Parse cargo install --list output to find which package installed the given binary
+fn map_bin_name_to_cargo_package_name(bin_name: &str) -> String {
+    // Special case: if the binary is 'cargo' itself, it's part of the Rust toolchain
+    // and shouldn't be updated via cargo install
+    if bin_name == "cargo" {
+        return "cargo-toolchain".to_string(); // This will be handled specially
+    }
+
+    let output = Command::new("cargo")
+        .args(&["install", "--list"])
+        .output()
+        .ok();
+
+    if let Some(output) = output {
+        if output.status.success() {
+            let list_output = String::from_utf8_lossy(&output.stdout);
+            let mut current_package = None;
+            
+            for line in list_output.lines() {
+                let line = line.trim_end();
+                
+                // Package lines don't start with whitespace and contain version info
+                if !line.starts_with(' ') && !line.starts_with('\t') && line.contains(' ') {
+                    // Extract package name (everything before the first space)
+                    current_package = line.split_whitespace().next().map(|s| s.to_string());
+                } else if line.starts_with(' ') || line.starts_with('\t') {
+                    // Binary lines are indented
+                    let binary_name = line.trim();
+                    if binary_name == bin_name {
+                        if let Some(package) = &current_package {
+                            return package.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If we can't find the package that installed the binary, fall back to the bin name
     bin_name.to_string()
 }
