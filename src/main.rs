@@ -9,7 +9,10 @@ use std::process::{exit, Command, Stdio};
 #[command(about = "Update a binary to its latest version by using the original package manager")]
 struct Args {
     bin_name: String,
-    #[arg(long, help = "Display package name and package manager instead of updating")]
+    #[arg(
+        long,
+        help = "Display package name and package manager instead of updating"
+    )]
     info: bool,
 }
 
@@ -226,27 +229,15 @@ fn get_update_command(
         )),
         "bun" => Ok((
             "bun".to_string(),
-            vec![
-                "update".to_string(),
-                "-g".to_string(),
-                package_name.to_string(),
-            ],
+            vec!["i".to_string(), "-g".to_string(), package_name.to_string()],
         )),
         "npm" => Ok((
             "npm".to_string(),
-            vec![
-                "update".to_string(),
-                "-g".to_string(),
-                package_name.to_string(),
-            ],
+            vec!["i".to_string(), "-g".to_string(), package_name.to_string()],
         )),
         "pnpm" => Ok((
             "pnpm".to_string(),
-            vec![
-                "update".to_string(),
-                "-g".to_string(),
-                package_name.to_string(),
-            ],
+            vec!["i".to_string(), "-g".to_string(), package_name.to_string()],
         )),
         "cargo" => Ok((
             "cargo".to_string(),
@@ -256,7 +247,7 @@ fn get_update_command(
             "yarn".to_string(),
             vec![
                 "global".to_string(),
-                "upgrade".to_string(),
+                "add".to_string(),
                 package_name.to_string(),
             ],
         )),
@@ -504,7 +495,7 @@ fn map_bin_name_to_bun_package_name(bin_name: &str) -> String {
     let bun_global_dir = std::env::var("HOME")
         .map(|home| format!("{}/.bun/install/global", home))
         .unwrap_or_else(|_| "~/.bun/install/global".to_string());
-    
+
     let package_json_path = format!("{}/package.json", bun_global_dir);
     let package_json_content = std::fs::read_to_string(package_json_path).unwrap_or_default();
     let package_json: serde_json::Value =
@@ -545,21 +536,22 @@ fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
         .output()
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
-    
+
     if let Some(installed_list) = installed_packages {
         // Convert to a set for O(1) lookup
-        let installed_set: std::collections::HashSet<&str> = installed_list.lines()
+        let installed_set: std::collections::HashSet<&str> = installed_list
+            .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
             .collect();
-        
+
         // Use `brew which-formula` to find which packages provide the binary
         let candidates = Command::new("brew")
             .args(&["which-formula", bin_name])
             .output()
             .ok()
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
-        
+
         if let Some(candidates) = candidates {
             if !candidates.is_empty() && !candidates.contains("Error") {
                 // Find the first candidate that is installed
@@ -568,7 +560,7 @@ fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
                     if candidate.is_empty() {
                         continue;
                     }
-                    
+
                     if installed_set.contains(candidate) {
                         return candidate.to_string();
                     }
@@ -576,7 +568,7 @@ fn map_bin_name_to_homebrew_package_name(bin_name: &str) -> String {
             }
         }
     }
-    
+
     // If we can't find the package that provides the binary, fall back to the bin name
     bin_name.to_string()
 }
